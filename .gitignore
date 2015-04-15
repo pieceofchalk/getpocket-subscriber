@@ -51,6 +51,7 @@ coverage.xml
 *.log
 #mel stuff:
 *.mel
+*.sql
 # Sphinx documentation
 docs/_build/
 
