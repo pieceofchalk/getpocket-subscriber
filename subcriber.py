@@ -25,10 +25,7 @@ LAST_CHECK_QUERY = '''SELECT scan_start_time
                       ORDER BY scan_start_time
                       DESC LIMIT 1'''
 
-INSERT_QUERY = '''INSERT INTO subscriber (scan_start_time,
-                  scan_end_time, new_count, feeds_count,
-                  status_string, status_extras)
-                  VALUES(?, ?, ?, ?, ?, ?)'''
+INSERT_QUERY = '''INSERT INTO subscriber VALUES(?, ?, ?, ?, ?, ?)'''
 
 
 def is_outline(node):
@@ -55,28 +52,6 @@ def date_created_oml(doc):
     return date
 
 
-def process_outline(element):
-    error = {}
-    outline = {}
-    try:
-        outline['title'] = element.attributes['title'].value
-    except Exception as er:
-        error[repr(element)] = str(er)
-    else:
-        try:
-            _type = element.attributes['type'].value
-            assert _type == 'rss', 'not rss'
-        except Exception as er:
-            error[outline['title']] = str(er)
-        else:
-            try:
-                outline['url'] = element.attributes['xmlUrl'].value
-            except Exception as er:
-                error[outline['title']] = str(er)
-    finally:
-        return outline, error
-
-
 class Subscriber():
     def __init__(self, _file):
         config = ConfigParser.ConfigParser()
@@ -87,12 +62,19 @@ class Subscriber():
         self.token = config.get('subscriber', 'pocket_access_token')
 
     def bd_last_check(self):
-        db = sqlite3.connect(self.sqlite_path)
-        cursor = db.cursor()
-        cursor.execute(CREATE_DB_QUERY)
-        cursor.execute(LAST_CHECK_QUERY)
-        last_check = cursor.fetchone()
-        return last_check
+        con = sqlite3.connect(self.sqlite_path)
+        cur = con.cursor()
+        try:
+            cur.execute(CREATE_DB_QUERY)
+            cur.execute(LAST_CHECK_QUERY)
+            last_check = cur.fetchone()
+            con.commit()
+        except Exception as error:
+            con.close()
+            raise Exception(error)
+        else:
+            con.close()
+            return last_check
 
     def pocket(self, outlines):
         _len = len(outlines)
@@ -104,6 +86,7 @@ class Subscriber():
                     "consumer_key": self.key,
                     "access_token": self.token}
             try:
+                pass
                 r = requests.post(ADD_URL, headers=HEADERS,
                                   data=json.dumps(data), timeout=5)
                 if r.status_code != 200:
@@ -124,6 +107,41 @@ class Subscriber():
             sys.stdout.write('\b' * len(percents))
         sys.stdout.write('\b' * 18)
 
+    def process_outline(self, element):
+        sub_level = [node for node in element.childNodes if is_outline(node)]
+        if sub_level:
+            for node in sub_level:
+                self.process_outline(node)
+        else:
+            self.feeds_count += 1
+            error = {}
+            outline = {}
+            try:
+                outline['title'] = element.attributes['title'].value
+                assert outline['title'], 'no title'
+            except Exception as er:
+                error['element'] = repr(element)
+                error['error'] = str(er)
+            else:
+                try:
+                    _type = element.attributes['type'].value
+                    assert _type == 'rss', 'no rss'
+                except Exception as er:
+                    error['element'] = [outline['title']]
+                    error['error'] = str(er)
+                else:
+                    try:
+                        outline['url'] = element.attributes['xmlUrl'].value
+                        assert outline['url'], 'no url'
+                    except Exception as er:
+                        error['element'] = [outline['title']]
+                        error['error'] = str(er)
+                    else:
+                        self.outlines.append(outline)
+            finally:
+                if error:
+                    self.errors['errors'].append(error)
+
     def get_outlines(self, doc):
         self.feeds_count = 0
         self.errors = {'errors': []}
@@ -131,28 +149,30 @@ class Subscriber():
         body = doc.getElementsByTagName('body')[0]
         toplevel = [node for node in body.childNodes if is_outline(node)]
         for el in toplevel:
-            sub_level = [node for node in el.childNodes if is_outline(node)]
-            for node in sub_level:
-                self.feeds_count += 1
-                outline, error = process_outline(node)
-                if error:
-                    self.errors['errors'].append(error)
-                else:
-                    self.outlines.append(outline)
+            self.process_outline(el)
 
     def write_database(self, scan_start_time, status_string, status_extras):
-        db = sqlite3.connect(self.sqlite_path)
+        con = sqlite3.connect(self.sqlite_path)
+        cur = con.cursor()
         scan_end_time = time.time()
         try:
-            db.executemany(INSERT_QUERY, [(scan_start_time, scan_end_time,
-                                           self.new_count, self.feeds_count,
-                                           status_string, status_extras)])
-            db.commit()
-            db.close()
+            cur.execute(INSERT_QUERY,  (scan_start_time, scan_end_time,
+                                        self.new_count, self.feeds_count,
+                                        status_string, status_extras))
+            con.commit()
         except Exception as error:
             print error
+        finally:
+            con.close()
 
-    def process(self):
+    def get_all_from_db(self):
+        db = sqlite3.connect(self.sqlite_path)
+        cur = db.cursor()
+        cur.execute('SELECT * FROM subscriber')
+        print cur.fetchall()
+        db.close()
+
+    def run(self):
         doc = minidom.parse(self.opml_path)
         last_check = self.bd_last_check()
         if (last_check and date_created_oml(doc) > datetime.fromtimestamp(last_check[0])) or not last_check:
@@ -174,11 +194,12 @@ class Subscriber():
             line = 'new_count: {}; feeds_count:{}; status_string:{};'
             print line.format(self.new_count, self.feeds_count, status_string)
         else:
-            print 'now new feeds in opml: {}'.format(self.opml_path)
+            print 'no new feeds in opml: {}'.format(self.opml_path)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config-file', dest='config_file', required=True,
                         type=argparse.FileType(mode='r'))
     args = parser.parse_args()
-    Subscriber(args.config_file).process()
+    Subscriber(args.config_file).run()
+    # Subscriber(args.config_file).get_all_from_db()
