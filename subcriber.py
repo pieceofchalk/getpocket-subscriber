@@ -181,5 +181,4 @@ if __name__ == '__main__':
     parser.add_argument('--config-file', dest='config_file', required=True,
                         type=argparse.FileType(mode='r'))
     args = parser.parse_args()
-    # process(args.config_file)
     Subscriber(args.config_file).process()
