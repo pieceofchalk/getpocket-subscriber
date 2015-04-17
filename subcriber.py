@@ -45,7 +45,11 @@ def getText(nodelist):
 
 def date_created_oml(doc):
     head = doc.getElementsByTagName('head')[0]
-    date = head.getElementsByTagName('dateCreated')[0]
+    if head.getElementsByTagName('dateModified'):
+        date = head.getElementsByTagName('dateModified')[0]
+    else:
+        date = head.getElementsByTagName('dateCreated')[0]
+
     date = getText(date.childNodes)
     date = datetime.strptime(' '.join(date.split()[:-1]),
                              '%a, %d %b %Y %H:%M:%S')
@@ -113,31 +117,35 @@ class Subscriber():
             for node in sub_level:
                 self.process_outline(node)
         else:
+            keys = element.attributes.keys()
             self.feeds_count += 1
             error = {}
             outline = {}
             try:
-                outline['title'] = element.attributes['title'].value
+                for key in keys:
+                    if 'title' in key.lower():
+                        title = key
+                        break
+                    if 'text' in key.lower():
+                        title = key
+                outline['title'] = element.attributes[title].value
+                print outline['title']
                 assert outline['title'], 'no title'
             except Exception as er:
                 error['element'] = repr(element)
                 error['error'] = str(er)
             else:
+                for key in keys:
+                    if 'url' in key.lower():
+                        url = key
                 try:
-                    _type = element.attributes['type'].value
-                    assert _type == 'rss', 'no rss'
+                    outline['url'] = element.attributes[url].value
+                    assert outline['url'], 'no url'
                 except Exception as er:
                     error['element'] = [outline['title']]
                     error['error'] = str(er)
                 else:
-                    try:
-                        outline['url'] = element.attributes['xmlUrl'].value
-                        assert outline['url'], 'no url'
-                    except Exception as er:
-                        error['element'] = [outline['title']]
-                        error['error'] = str(er)
-                    else:
-                        self.outlines.append(outline)
+                    self.outlines.append(outline)
             finally:
                 if error:
                     self.errors['errors'].append(error)
