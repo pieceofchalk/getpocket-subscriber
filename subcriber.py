@@ -57,11 +57,14 @@ def date_created_oml(doc):
 
 
 class Subscriber():
-    def __init__(self, _file):
+    def __init__(self, _file, opml_file):
         config = ConfigParser.ConfigParser()
         config.readfp(_file)
         self.sqlite_path = config.get('subscriber', 'sqlite_path')
-        self.opml_path = config.get('subscriber', 'opml_path')
+        if opml_file:
+            self.opml_path = opml_file
+        else:
+            self.opml_path = config.get('subscriber', 'opml_path')
         self.key = config.get('subscriber', 'pocket_consumer_key')
         self.token = config.get('subscriber', 'pocket_access_token')
 
@@ -75,7 +78,7 @@ class Subscriber():
             con.commit()
         except Exception as error:
             con.close()
-            raise Exception(error)
+            print error
         else:
             con.close()
             return last_check
@@ -206,8 +209,10 @@ class Subscriber():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config-file', dest='config_file', required=True,
+    parser.add_argument('--conf-file', dest='config_file', required=True,
                         type=argparse.FileType(mode='r'))
+    parser.add_argument('--opml-file', dest='opml_file', type=str)
+
     args = parser.parse_args()
-    Subscriber(args.config_file).run()
+    Subscriber(args.config_file, opml_file=args.opml_file or None).run()
     # Subscriber(args.config_file).get_all_from_db()
