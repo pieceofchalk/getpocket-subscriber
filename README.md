@@ -6,5 +6,6 @@ usage:
     - opml_path - path to the OPML file to read.
     - pocket_consumer_key - a key getpocket api needs to authenticate user.
     - pocket_access_token - a token for getpocket api.
-  - run: python subcriber.py --config-file config.cfg
+  - run: python subcriber.py --conf config.cfg --opml opml.xml (optional)
+  - 
   
