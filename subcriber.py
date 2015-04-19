@@ -8,6 +8,7 @@ import time
 import requests
 import json
 import sys
+import feedparser
 
 
 ADD_URL = 'https://getpocket.com/v3/add'
@@ -26,6 +27,21 @@ LAST_CHECK_QUERY = '''SELECT scan_start_time
                       DESC LIMIT 1'''
 
 INSERT_QUERY = '''INSERT INTO subscriber VALUES(?, ?, ?, ?, ?, ?)'''
+
+
+def pocket_add(data):
+    try:
+        r = requests.post(ADD_URL, headers=HEADERS,
+                          data=json.dumps(data), timeout=5)
+        if r.status_code != 200:
+            print 'Error: {}'.format(r.headers.get('x-error'))
+            if r.headers.get('x-limit-user-remaining') == '0':
+                sleep = int(r.headers.get('x-limit-user-reset'))
+                if sleep:
+                    print 'Wait {}sec'.format(sleep)
+                    time.sleep(sleep)
+    except Exception as error:
+        print error
 
 
 def is_outline(node):
@@ -83,84 +99,65 @@ class Subscriber():
             con.close()
             return last_check
 
-    def pocket(self, outlines):
-        _len = len(outlines)
-        self.new_count = 0
-        sys.stdout.write('Sending to pocket:')
-        sys.stdout.flush()
-        for i in range(_len):
-            data = {"url": outlines[i]['url'], "title": outlines[i]['title'],
+    def send_to_pocket(self, item):
+        try:
+            data = {"url": item.link, "title": item.title,
                     "consumer_key": self.key,
                     "access_token": self.token}
-            try:
-                pass
-                r = requests.post(ADD_URL, headers=HEADERS,
-                                  data=json.dumps(data), timeout=5)
-                if r.status_code != 200:
-                    print 'Error: {}'.format(r.headers.get('x-error'))
-                    if r.headers.get('x-limit-user-remaining') == '0':
-                        sleep = int(r.headers.get('x-limit-user-reset'))
-                        if sleep:
-                            print 'Wait {}sec'.format(sleep)
-                            time.sleep(sleep)
-                # print req.headers
-            except Exception as error:
-                print error
-            else:
-                self.new_count += 1
-            percents = '{}%'.format(int((i + 1) / (_len/100.0)))
-            sys.stdout.write(percents)
-            sys.stdout.flush()
-            sys.stdout.write('\b' * len(percents))
-        sys.stdout.write('\b' * 18)
+            pocket_add(data)
+        except Exception as error:
+            print item, error
+        else:
+            print '+' * 10, data['url'], data['title']
+            self.new_count += 1
 
-    def process_outline(self, element):
+    def rss_to_pocket(self, feeds):
+        for url in feeds:
+            k = 0
+            try:
+                rss = feedparser.parse(url)
+            except Exception as error:
+                self.errors['errors'].append({'feed': url, 'error': error})
+            else:
+                if 'title' in rss.feed:
+                    print rss.feed.title
+                else:
+                    print url
+                for item in rss.entries:
+                    k += 1 
+                    if ('published_parsed' in rss.feed
+                        and time.mktime(item.published_parsed) > self.last_run
+                            or ('updated_parsed' in rss.feed
+                                and time.mktime(item.updated_parsed)) > self.last_run):
+                        self.send_to_pocket(item)
+                    percents = '{}%'.format(int(k / (len(rss.entries)/100.0)))
+                    sys.stdout.write(percents)
+                    sys.stdout.flush()
+                    sys.stdout.write('\b' * len(percents))
+                sys.stdout.write('\b' * 18)
+
+    def parse_outline(self, element):
         sub_level = [node for node in element.childNodes if is_outline(node)]
         if sub_level:
             for node in sub_level:
-                self.process_outline(node)
+                self.parse_outline(node)
         else:
-            keys = element.attributes.keys()
             self.feeds_count += 1
-            error = {}
-            outline = {}
-            try:
-                for key in keys:
-                    if 'title' in key.lower():
-                        title = key
-                        break
-                    if 'text' in key.lower():
-                        title = key
-                outline['title'] = element.attributes[title].value
-                print outline['title']
-                assert outline['title'], 'no title'
-            except Exception as er:
-                error['element'] = repr(element)
-                error['error'] = str(er)
+            keys = element.attributes.keys()
+            if 'xmlUrl' in keys:
+                self.feeds.append(element.attributes['xmlUrl'].value)
             else:
-                for key in keys:
-                    if 'url' in key.lower():
-                        url = key
-                try:
-                    outline['url'] = element.attributes[url].value
-                    assert outline['url'], 'no url'
-                except Exception as er:
-                    error['element'] = [outline['title']]
-                    error['error'] = str(er)
-                else:
-                    self.outlines.append(outline)
-            finally:
-                if error:
-                    self.errors['errors'].append(error)
+                el_repr = ';'.join('{}:{}'.format(key, element.attributes[key].value) for key in keys)
+                self.errors['errors'].append({'feed': el_repr, 'error': 'No xmlUrl'})
 
-    def get_outlines(self, doc):
+    def parse_opml(self):
+        doc = minidom.parse(self.opml_path)
         self.feeds_count = 0
-        self.errors = {'errors': []}
-        self.outlines = []
+        self.feeds = []
         body = doc.getElementsByTagName('body')[0]
         toplevel = [node for node in body.childNodes if is_outline(node)]
         for el in toplevel:
-            self.process_outline(el)
+            self.parse_outline(el)
 
     def write_database(self, scan_start_time, status_string, status_extras):
         con = sqlite3.connect(self.sqlite_path)
@@ -184,34 +181,33 @@ class Subscriber():
         db.close()
 
     def run(self):
-        doc = minidom.parse(self.opml_path)
-        last_check = self.bd_last_check()
-        if (last_check and date_created_oml(doc) > datetime.fromtimestamp(last_check[0])) or not last_check:
-            scan_start_time = time.time()
-            self.get_outlines(doc)
-            self.pocket(self.outlines)
-            if self.errors['errors']:
-                status_extras = json.dumps(self.errors)
-            else:
-                status_extras = ''
+        self.last_run = self.bd_last_check()
+        scan_start_time = time.time()
+        self.new_count = 0
+        self.errors = {'errors': []}
+        self.parse_opml()
+        # print self.feeds
+        self.rss_to_pocket(self.feeds)
+
+        if self.errors['errors']:
+            status_extras = json.dumps(self.errors)
+            status_string = 'done with errors'
             if self.new_count == 0:
                 status_string = 'failed'
-            elif self.new_count == self.feeds_count:
-                status_string = 'done'
-            else:
-                status_string = 'done with errors'
-
-            self.write_database(scan_start_time, status_string, status_extras)
-            line = 'new_count: {}; feeds_count:{}; status_string:{};'
-            print line.format(self.new_count, self.feeds_count, status_string)
         else:
-            print 'no new feeds in opml: {}'.format(self.opml_path)
+            status_extras = ''
+            status_string = 'done'
+
+        self.write_database(scan_start_time, status_string, status_extras)
+        line = 'new_count: {}; feeds_count:{}; status_string:{};'
+        print line.format(self.new_count, self.feeds_count, status_string)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--conf-file', dest='config_file', required=True,
+    parser.add_argument('--conf', dest='config_file', required=True,
                         type=argparse.FileType(mode='r'))
-    parser.add_argument('--opml-file', dest='opml_file', type=str)
+    parser.add_argument('--opml', dest='opml_file', type=str)
 
     args = parser.parse_args()
     Subscriber(args.config_file, opml_file=args.opml_file or None).run()
